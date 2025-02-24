@@ -1,0 +1,78 @@
+from fastapi import FastAPI, BackgroundTasks
+from pydantic import BaseModel
+import openai
+import smtplib
+from email.mime.text import MIMEText
+import requests
+from bs4 import BeautifulSoup
+
+# Initialize FastAPI app
+app = FastAPI()
+
+# OpenAI API Key (Replace with your own)
+OPENAI_API_KEY = "your_openai_api_key"
+openai.api_key = OPENAI_API_KEY
+
+# Email configuration
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 587
+EMAIL_USER = "your_email@gmail.com"
+EMAIL_PASS = "your_email_password"
+
+class BookingRequest(BaseModel):
+    event_name: str
+    promoter_name: str
+    email: str
+    details: str
+
+def scrape_gigs():
+    """Scrape potential DJ gigs from event websites."""
+    url = "https://www.residentadvisor.net/events"
+    response = requests.get(url)
+    soup = BeautifulSoup(response.text, 'html.parser')
+    gigs = []
+    for event in soup.find_all("div", class_="event-item"):
+        gig = {
+            "name": event.find("h1").text.strip(),
+            "date": event.find("time").text.strip(),
+            "link": event.find("a")["href"]
+        }
+        gigs.append(gig)
+    return gigs
+
+def generate_email(event_name, promoter_name, details):
+    """Generate a personalized email using OpenAI."""
+    prompt = f"""
+    Write a professional email to {promoter_name} requesting a DJ booking for the event '{event_name}'.
+    Highlight why I would be a great fit based on these details: {details}.
+    """
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return response["choices"][0]["message"]["content"].strip()
+
+def send_email(recipient, subject, body):
+    """Send an email to the promoter."""
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = EMAIL_USER
+    msg["To"] = recipient
+    
+    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+        server.starttls()
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.sendmail(EMAIL_USER, recipient, msg.as_string())
+
+@app.get("/gigs")
+def get_gigs():
+    """Fetches potential gig opportunities."""
+    gigs = scrape_gigs()
+    return {"gigs": gigs}
+
+@app.post("/send_booking_request")
+def send_booking_request(request: BookingRequest, background_tasks: BackgroundTasks):
+    """Sends an AI-generated booking request to a promoter."""
+    email_body = generate_email(request.event_name, request.promoter_name, request.details)
+    background_tasks.add_task(send_email, request.email, f"DJ Booking Inquiry: {request.event_name}", email_body)
+    return {"message": "Booking request sent!"}
